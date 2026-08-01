@@ -7,6 +7,7 @@ Automatically saves your game when you approach a mission, after completing one,
 - **Autosave on approach** — saves automatically when you walk up to a mission giver marker
 - **Autosave on completion** — saves after a mission is completed successfully
 - **Mission retry** — when a mission fails, a prompt appears letting you press **Y** to reload from the last approach autosave, or **N** to dismiss it
+- **Controller support** — the retry prompt can also be answered on a gamepad: **D-Pad Right** for yes, **D-Pad Left** for no. The prompt switches to controller wording once you've used a pad, and the buttons are rebindable in the INI. Requires an XInput-compatible controller; everything else in the mod is automatic and needs no input at all
 - **Post-load orientation** — after loading, the player and camera rotate to face the nearest mission marker
 
 ## Requirements
@@ -33,3 +34,7 @@ Open the INI file for your game (`Autosave.III.ini`, `Autosave.VC.ini`, or `Auto
 | `Debug` | `0` / `1` | Enables an on-screen debug overlay showing the mod's internal state |
 | `ApproachAutosave` | `0` / `1` | Autosave when approaching a mission marker (default: enabled) |
 | `MissionCompleteAutosave` | `0` / `1` | Autosave after completing a mission (default: enabled) |
+| `ControllerRetryYes` | button name | Controller button that reloads the autosave at the retry prompt (default: `DPadRight`) |
+| `ControllerRetryNo` | button name | Controller button that dismisses the retry prompt (default: `DPadLeft`) |
+
+Accepted button names: `None`, `DPadUp`, `DPadDown`, `DPadLeft`, `DPadRight`, `Start`, `Back`, `LeftThumb`, `RightThumb`, `LeftShoulder`, `RightShoulder`, `A`, `B`, `X`, `Y`. Use `None` to disable that binding. The keyboard **Y** / **N** keys always work regardless.

@@ -22,6 +22,10 @@
 #include <CMessages.h>
 #include <extensions/Config.h>
 #include <extensions/Screen.h>
+#include <Xinput.h>
+#include <cstdlib>
+#include <cstring>
+#include <string>
 
 using namespace plugin;
 
@@ -36,6 +40,12 @@ namespace Config {
     constexpr unsigned int AUTOSAVE_DISPLAY_DURATION_MS = 3000;
     constexpr int MISSION_COMPLETE_SAVE_SLOT = 6;  // Autosave on mission complete
     constexpr int MISSION_RETRY_SAVE_SLOT = 7;     // Autosave near mission marker for retry
+
+    // Controller (see the ControllerInput namespace for accepted button names)
+    constexpr const char* DEFAULT_CONTROLLER_YES = "DPadRight";
+    constexpr const char* DEFAULT_CONTROLLER_NO = "DPadLeft";
+    constexpr unsigned int CONTROLLER_RECONNECT_INTERVAL_MS = 2000;  // XInputGetState is slow with no pad attached
+    constexpr short CONTROLLER_STICK_DEADZONE = 12000;
 }
 
 // ============================================================================
@@ -356,6 +366,127 @@ namespace Utils {
 } // namespace Utils
 
 // ============================================================================
+// Controller Input - XInput polling
+// ============================================================================
+// The stock III/VC executables fold a joypad's D-Pad into the left stick and only
+// write CControllerState's DPad* fields from bound keyboard actions, so CPad never
+// sees a real controller's D-Pad. Polling XInput directly bypasses the game's input
+// plumbing and gives one code path for all three games. XInputGetState is resolved
+// dynamically so no extra .lib is linked and a missing DLL degrades to "no pad".
+namespace ControllerInput {
+
+    typedef DWORD (WINAPI *XInputGetStateFn)(DWORD, XINPUT_STATE*);
+
+    struct ButtonName {
+        const char* name;    // as written in the ini
+        const char* label;   // as shown in the retry prompt
+        WORD mask;
+    };
+
+    static const ButtonName BUTTON_NAMES[] = {
+        { "None",           "",              0                              },
+        { "DPadUp",         "D-Pad Up",      XINPUT_GAMEPAD_DPAD_UP         },
+        { "DPadDown",       "D-Pad Down",    XINPUT_GAMEPAD_DPAD_DOWN       },
+        { "DPadLeft",       "D-Pad Left",    XINPUT_GAMEPAD_DPAD_LEFT       },
+        { "DPadRight",      "D-Pad Right",   XINPUT_GAMEPAD_DPAD_RIGHT      },
+        { "Start",          "Start",         XINPUT_GAMEPAD_START           },
+        { "Back",           "Back",          XINPUT_GAMEPAD_BACK            },
+        { "LeftThumb",      "L3",            XINPUT_GAMEPAD_LEFT_THUMB      },
+        { "RightThumb",     "R3",            XINPUT_GAMEPAD_RIGHT_THUMB     },
+        { "LeftShoulder",   "LB",            XINPUT_GAMEPAD_LEFT_SHOULDER   },
+        { "RightShoulder",  "RB",            XINPUT_GAMEPAD_RIGHT_SHOULDER  },
+        { "A",              "A",             XINPUT_GAMEPAD_A               },
+        { "B",              "B",             XINPUT_GAMEPAD_B               },
+        { "X",              "X",             XINPUT_GAMEPAD_X               },
+        { "Y",              "Y",             XINPUT_GAMEPAD_Y               },
+    };
+
+    static HMODULE s_xinputDll = nullptr;
+    static XInputGetStateFn s_getState = nullptr;
+    static bool s_connected = false;
+    static bool s_everUsed = false;
+    static WORD s_currButtons = 0;
+    static WORD s_prevButtons = 0;
+    static unsigned int s_lastProbeTime = 0;
+    static bool s_probed = false;
+
+    void Init() {
+        static const char* dllNames[] = { "xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll" };
+        for (const char* dll : dllNames) {
+            s_xinputDll = LoadLibraryA(dll);
+            if (s_xinputDll) {
+                s_getState = (XInputGetStateFn)GetProcAddress(s_xinputDll, "XInputGetState");
+                if (s_getState) break;
+                FreeLibrary(s_xinputDll);
+                s_xinputDll = nullptr;
+            }
+        }
+    }
+
+    void Update(unsigned int currentTime) {
+        s_prevButtons = s_currButtons;
+
+        if (!s_getState) return;
+
+        // Back off between probes while nothing is plugged in.
+        // CTimer resets on load, so a backwards jump forces an immediate re-probe.
+        if (!s_connected && s_probed &&
+            currentTime >= s_lastProbeTime &&
+            currentTime - s_lastProbeTime < Config::CONTROLLER_RECONNECT_INTERVAL_MS) {
+            s_currButtons = 0;
+            return;
+        }
+
+        s_lastProbeTime = currentTime;
+        s_probed = true;
+
+        XINPUT_STATE state = {};
+        if (s_getState(0, &state) != ERROR_SUCCESS) {
+            s_connected = false;
+            s_currButtons = 0;
+            return;
+        }
+
+        s_connected = true;
+        s_currButtons = state.Gamepad.wButtons;
+
+        if (!s_everUsed) {
+            const XINPUT_GAMEPAD& pad = state.Gamepad;
+            constexpr short DZ = Config::CONTROLLER_STICK_DEADZONE;
+            if (pad.wButtons != 0 || pad.bLeftTrigger > 64 || pad.bRightTrigger > 64 ||
+                abs(pad.sThumbLX) > DZ || abs(pad.sThumbLY) > DZ ||
+                abs(pad.sThumbRX) > DZ || abs(pad.sThumbRY) > DZ) {
+                s_everUsed = true;
+            }
+        }
+    }
+
+    bool IsButtonJustDown(WORD mask) {
+        return mask != 0 && (s_currButtons & mask) != 0 && (s_prevButtons & mask) == 0;
+    }
+
+    bool IsConnected() { return s_connected; }
+
+    // True once the player has actually touched the pad - drives the prompt wording
+    bool WasEverUsed() { return s_everUsed; }
+
+    WORD GetButtonState() { return s_currButtons; }
+
+    // Resolves an ini button name. Returns false (leaving outputs untouched) if unknown.
+    bool ParseButtonName(const char* name, WORD& outMask, const char*& outLabel) {
+        for (const ButtonName& entry : BUTTON_NAMES) {
+            if (_stricmp(name, entry.name) == 0) {
+                outMask = entry.mask;
+                outLabel = entry.label;
+                return true;
+            }
+        }
+        return false;
+    }
+
+} // namespace ControllerInput
+
+// ============================================================================
 // AutosaveMod Class - Main mod logic
 // ============================================================================
 class AutosaveMod {
@@ -380,6 +511,10 @@ private:
         bool debugMode = false;
         bool approachAutosaveEnabled = true;
         bool missionCompleteAutosaveEnabled = true;
+        WORD controllerYesButton = XINPUT_GAMEPAD_DPAD_RIGHT;
+        WORD controllerNoButton = XINPUT_GAMEPAD_DPAD_LEFT;
+        const char* controllerYesLabel = "D-Pad Right";
+        const char* controllerNoLabel = "D-Pad Left";
     } m_settings;
 
     // ========================================================================
@@ -406,6 +541,7 @@ private:
     bool m_showRetryPrompt = false;
     bool m_retryYKeyWasPressed = false;
     bool m_retryNKeyWasPressed = false;
+    char m_retryPromptText[96] = "";
 
     // Debug
     char m_debugText[256] = "";
@@ -417,6 +553,7 @@ private:
     // ========================================================================
     
     void OnGameInit() {
+        ControllerInput::Init();
         LoadConfig();
         ResetLoadState();
         m_autosaveDisplayUntil = 0;
@@ -424,7 +561,8 @@ private:
 
     void OnGameProcess() {
         unsigned int currentTime = CTimer::m_snTimeInMilliseconds;
-        
+
+        ControllerInput::Update(currentTime);
         DetectGameLoad(currentTime);
         HandlePostLoadState(currentTime);
         HandleAutosave(currentTime);
@@ -450,6 +588,12 @@ private:
         m_settings.approachAutosaveEnabled = config["ApproachAutosave"].asInt(1) != 0;
         m_settings.missionCompleteAutosaveEnabled = config["MissionCompleteAutosave"].asInt(1) != 0;
 
+        // Unknown button names fall back to the defaults already in m_settings
+        std::string yesButton = config["ControllerRetryYes"].asString(Config::DEFAULT_CONTROLLER_YES);
+        ControllerInput::ParseButtonName(yesButton.c_str(), m_settings.controllerYesButton, m_settings.controllerYesLabel);
+        std::string noButton = config["ControllerRetryNo"].asString(Config::DEFAULT_CONTROLLER_NO);
+        ControllerInput::ParseButtonName(noButton.c_str(), m_settings.controllerNoButton, m_settings.controllerNoLabel);
+
         bool needSave = false;
         if (config["Debug"].isEmpty()) {
             config["Debug"] = 0;
@@ -461,6 +605,14 @@ private:
         }
         if (config["MissionCompleteAutosave"].isEmpty()) {
             config["MissionCompleteAutosave"] = 1;
+            needSave = true;
+        }
+        if (config["ControllerRetryYes"].isEmpty()) {
+            config["ControllerRetryYes"] = Config::DEFAULT_CONTROLLER_YES;
+            needSave = true;
+        }
+        if (config["ControllerRetryNo"].isEmpty()) {
+            config["ControllerRetryNo"] = Config::DEFAULT_CONTROLLER_NO;
             needSave = true;
         }
         if (needSave) {
@@ -682,10 +834,9 @@ private:
             // If save failed, keep m_pendingMissionCompleteSave true to retry on next frame
         }
 
-        // Handle retry input
-        if (m_showRetryPrompt) {
-            HandleRetryInput();
-        }
+        // Handle retry input (called every frame so the key latches stay fresh - a key
+        // already held down when the prompt appears must not answer it instantly)
+        HandleRetryInput();
     }
 
     void ResetMissionRetryState(int missionsPassed) {
@@ -699,16 +850,24 @@ private:
         bool yPressed = KeyPressed('Y');
         bool nPressed = KeyPressed('N');
 
-        if (yPressed && !m_retryYKeyWasPressed) {
-            LoadAutosave();
-            m_showRetryPrompt = false;
-        }
-        else if (nPressed && !m_retryNKeyWasPressed) {
-            m_showRetryPrompt = false;
-        }
+        // ControllerInput does its own edge detection every frame, so no latch needed here
+        bool yesJustPressed = (yPressed && !m_retryYKeyWasPressed) ||
+                              ControllerInput::IsButtonJustDown(m_settings.controllerYesButton);
+        bool noJustPressed = (nPressed && !m_retryNKeyWasPressed) ||
+                             ControllerInput::IsButtonJustDown(m_settings.controllerNoButton);
 
         m_retryYKeyWasPressed = yPressed;
         m_retryNKeyWasPressed = nPressed;
+
+        if (!m_showRetryPrompt) return;
+
+        if (yesJustPressed) {
+            LoadAutosave();
+            m_showRetryPrompt = false;
+        }
+        else if (noJustPressed) {
+            m_showRetryPrompt = false;
+        }
     }
 
     void LoadAutosave() {
@@ -744,8 +903,9 @@ private:
         bool isOnMission = Utils::IsOnMission();
         bool missionFailedVisible = Utils::IsMissionFailedTextVisible();
 
-        sprintf_s(m_debugText, sizeof(m_debugText), "near=%d load=%d miss=%d onmiss=%d failtxt=%d",
-            nearBlip, m_justLoaded, missionsPassed, isOnMission, missionFailedVisible);
+        sprintf_s(m_debugText, sizeof(m_debugText), "near=%d load=%d miss=%d onmiss=%d failtxt=%d pad=%d btn=%04X",
+            nearBlip, m_justLoaded, missionsPassed, isOnMission, missionFailedVisible,
+            ControllerInput::IsConnected(), ControllerInput::GetButtonState());
     }
 
     void DrawDebugInfo() {
@@ -810,19 +970,46 @@ private:
 #endif
     }
 
+    // Switches to controller wording once the player has actually touched a pad.
+    // Both input methods keep working regardless of which wording is shown.
+    bool ShouldShowControllerHint() {
+        return ControllerInput::WasEverUsed() &&
+               (m_settings.controllerYesButton != 0 || m_settings.controllerNoButton != 0);
+    }
+
     void DrawRetryPrompt() {
         if (!m_showRetryPrompt) return;
+
+        bool padHint = ShouldShowControllerHint();
+        // A button set to "None" in the ini falls back to advertising its keyboard key
+        const char* yesLabel = m_settings.controllerYesButton ? m_settings.controllerYesLabel : "Y";
+        const char* noLabel = m_settings.controllerNoButton ? m_settings.controllerNoLabel : "N";
 
 #if defined(GTAVC) || defined(GTASA)
         // Use the game's native big message system — same pipeline as "MISSION FAILED"
         // Called every frame with a short TTL so it stays visible until we stop calling it
-        CMessages::AddMessage("Retry mission? (Y / N)", 150, 0);
+        if (padHint) {
+            // Split with the game's newline token - the button names are too long for one line
+            sprintf_s(m_retryPromptText, sizeof(m_retryPromptText), "Retry mission?~n~%s = Yes / %s = No",
+                yesLabel, noLabel);
+        }
+        else {
+            strcpy_s(m_retryPromptText, sizeof(m_retryPromptText), "Retry mission? (Y / N)");
+        }
+        CMessages::AddMessage(m_retryPromptText, 150, 0);
 #else
         // GTA III fallback: custom CFont rendering
+        if (padHint) {
+            sprintf_s(m_retryPromptText, sizeof(m_retryPromptText), "%s - Yes  /  %s - No",
+                yesLabel, noLabel);
+        }
+        else {
+            strcpy_s(m_retryPromptText, sizeof(m_retryPromptText), "Y - Yes  /  N - No");
+        }
         float centerX = SCREEN_COORD_CENTER_X;
         float topY = SCREEN_COORD_TOP(80.0f);
         Utils::DrawCenteredText(centerX, topY, "Retry mission?", 1.0f, 2.0f, CRGBA(255, 255, 100, 255));
-        Utils::DrawCenteredText(centerX, topY + SCREEN_COORD(40.0f), "Y - Yes  /  N - No", 0.7f, 1.4f, CRGBA(255, 255, 255, 255));
+        Utils::DrawCenteredText(centerX, topY + SCREEN_COORD(40.0f), m_retryPromptText, 0.7f, 1.4f, CRGBA(255, 255, 255, 255));
 #endif
     }
 };

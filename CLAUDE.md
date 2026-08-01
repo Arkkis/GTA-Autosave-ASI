@@ -67,7 +67,8 @@ Everything lives in a single file: `source/Main.cpp`. It is organized into three
 
 1. **`Config` namespace** — compile-time constants (cooldowns, ranges, save slots). Change behavior here first before touching logic.
 2. **`Utils` namespace** — stateless helper functions. Includes game-state queries (`IsOnMission`, `IsCutsceneRunning`, `IsGameSafeToSave`) and blip/marker utilities. `IsMissionGiverSprite` hard-codes the list of GTA III mission giver radar sprites used to distinguish mission markers from other blips.
-3. **`AutosaveMod` class** — singleton that owns all mutable state and hooks into three Plugin SDK events:
+3. **`ControllerInput` namespace** — XInput gamepad polling for the mission retry prompt. Owns its own static state (edge detection, connection status). `XInputGetState` is resolved at runtime via `LoadLibraryA`/`GetProcAddress` (trying `xinput1_4` → `xinput1_3` → `xinput9_1_0`), so no extra `.lib` is linked and a missing DLL just means "no pad".
+4. **`AutosaveMod` class** — singleton that owns all mutable state and hooks into three Plugin SDK events:
    - `OnGameInit` — loads config from `Autosave.III.ini`
    - `OnGameProcess` — per-frame logic: load detection, autosave triggering, mission retry state machine
    - `OnDrawHud` — renders the "Autosaved" notification, retry prompt, and debug overlay
@@ -79,6 +80,7 @@ Everything lives in a single file: `source/Main.cpp`. It is organized into three
 - **Time preservation**: GTA III advances the in-game clock by 6 hours on every save. `PerformAutosave()` snapshots and restores `CClock` state around the save call to prevent this.
 - **Load detection**: There is no explicit "load" callback in the Plugin SDK. Loads are detected by monitoring `CTimer` for a wraparound/reset (`m_lastGameTime` vs current game time).
 - **Mission failure detection**: Checked by scanning the big-message text buffer for the strings `"MISSION FAILED"` or `"M_FAIL"`, since there is no dedicated API for this.
+- **Controller input**: The retry prompt is the mod's only interactive element. It is answered by keyboard `Y`/`N` (`KeyPressed`) or by gamepad via `ControllerInput`. `CPad` is deliberately **not** used: on stock III/VC executables a joypad's D-Pad is folded into the left stick by `CapturePad()` and the `CControllerState::DPad*` fields are only written by bound keyboard actions, so `CPad` never sees a real controller's D-Pad there. Defaults (D-Pad Right = yes, D-Pad Left = no) mirror SA's own `ConversationYesJustDown`/`ConversationNoJustDown`. Prompt wording auto-switches to button names once `ControllerInput::WasEverUsed()` trips.
 - **Post-load rotation**: After a detected load, the mod rotates the player and camera toward the nearest mission blip (within `MISSION_BLIP_ROTATION_RANGE`). A 500 ms grace period (`POST_LOAD_GRACE_PERIOD_MS`) suppresses the autosave trigger immediately after rotation so the player isn't auto-saved the instant they load.
 
 ### Adding new behavior
