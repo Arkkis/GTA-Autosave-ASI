@@ -33,12 +33,14 @@ jobs:
           "version=1.0.$count" >> $env:GITHUB_OUTPUT
 
       - name: Clone Plugin SDK
-        # Pinned for reproducibility. 6e79583a renamed CRunningScript::m_bAwake to
-        # m_bSkipWakeTime but left the VALIDATE_OFFSET pointing at the old name, which
-        # breaks the SDK's own VC target. This is its parent commit.
+        # Pinned for reproducibility - this is the SDK state of the last green build.
+        # Upstream master is not usable as-is: 6e79583a renamed CRunningScript::m_bAwake
+        # to m_bSkipWakeTime without updating the matching VALIDATE_OFFSET (breaks the
+        # SDK's own VC target), and newer revisions moved game headers into enums/ and
+        # meta/ subdirectories that Autosave.vcxproj's include paths do not cover.
         run: |
           git clone https://github.com/DK22Pac/plugin-sdk plugin-sdk
-          git -C plugin-sdk checkout 5da18b6f1956bb20bdfa39dcb07c44863ce26c81
+          git -C plugin-sdk checkout e809b63ff2f7891d578ba5b5947fa68921421c0d
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v1
