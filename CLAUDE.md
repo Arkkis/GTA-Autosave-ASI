@@ -52,7 +52,11 @@ Then set `PLUGIN_SDK_DIR` to that directory.
 
 ## CI / Releases
 
-`.github/workflows/build.yml` runs on every push to master. It clones the Plugin SDK, builds GTA III, Vice City, and San Andreas Release configurations, and publishes a GitHub release tagged `v1.0.{N}` where N is the total commit count. Release assets include:
+`.github/workflows/build.yml` runs on every push to master. It clones the Plugin SDK, builds GTA III, Vice City, and San Andreas Release configurations, and publishes a GitHub release tagged `v1.0.{N}` where N is the total commit count.
+
+The Plugin SDK clone is **pinned to a specific commit** in the workflow. Upstream master is not always buildable — commit `6e79583a` renamed `CRunningScript::m_bAwake` to `m_bSkipWakeTime` without updating the matching `VALIDATE_OFFSET`, which breaks the SDK's own VC target. Bump the pin deliberately and confirm all three targets still build.
+
+Note the workflow's `paths:` filter does not include `.github/**`, so a change to the workflow alone will not trigger it — use `gh workflow run "Build and Release"` to dispatch manually. Release assets include:
 - `Autosave.III.asi` + `Autosave.III.ini` (GTA III)
 - `Autosave.VC.asi` + `Autosave.VC.ini` (Vice City)
 - `Autosave.SA.asi` + `Autosave.SA.ini` (San Andreas)

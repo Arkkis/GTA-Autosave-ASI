@@ -33,7 +33,12 @@ jobs:
           "version=1.0.$count" >> $env:GITHUB_OUTPUT
 
       - name: Clone Plugin SDK
-        run: git clone https://github.com/DK22Pac/plugin-sdk plugin-sdk
+        # Pinned for reproducibility. 6e79583a renamed CRunningScript::m_bAwake to
+        # m_bSkipWakeTime but left the VALIDATE_OFFSET pointing at the old name, which
+        # breaks the SDK's own VC target. This is its parent commit.
+        run: |
+          git clone https://github.com/DK22Pac/plugin-sdk plugin-sdk
+          git -C plugin-sdk checkout 5da18b6f1956bb20bdfa39dcb07c44863ce26c81
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v1
